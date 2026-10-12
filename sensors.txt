@@ -1,0 +1,7 @@
+accelerometer
+gyroscope
+barometer
+front range
+bottom range
+optical flow
+color
