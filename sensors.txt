@@ -1,7 +1,8 @@
-accelerometer
-gyroscope
-barometer
-front range
-bottom range
-optical flow
-color
+height
+flow_velocity_x
+flow_velocity_y
+accel_x
+accel_y
+accel_z
+yaw_angle_z
+
