@@ -342,7 +342,6 @@ def main():
 
                 if telemetry_csv:
                     print(f"Telemetry CSV saved locally: {telemetry_csv}")
-                    print("Upload it to S3 manually from the AWS console when ready.")
 
                 # Show the updated leaderboard after every flight
                 flight_history.print_leaderboard()

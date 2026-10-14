@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-# CoDrone EDU's 7 onboard sensors. Column names stay fixed so S3 files
+# CoDrone EDU's 7 onboard sensors. Column names stay fixed so files
 # from different flights can be joined later.
 SCHEMA = [
     "timestamp_utc",
@@ -181,7 +181,7 @@ def sample_from_drone(drone: Any) -> dict[str, Any]:
 
 
 def simulate_sample(index: int) -> dict[str, Any]:
-    """Fake a moving drone so CSV + S3 can be tested without PH 517."""
+    """Fake a moving drone so CSV logging can be tested without PH 517."""
     t = index / 10.0
     return {
         "accel_x": round(math.sin(t) * 20, 3),
