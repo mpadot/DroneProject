@@ -1,5 +1,5 @@
 """
-Author Name: Fahad Akon
+Author Name: Fahad Akon, Miles Padot, Mohammed Shrime
 EID:         E02704365
 Class:       COSC311
 Assignment:  Milestone 1 of Drone Project
@@ -11,6 +11,8 @@ import math
 import statistics  # Used for calculating variance
 import csv  # For saving flight results
 from pathlib import Path
+
+from data_pipeline import TelemetryLogger, sample_from_drone
 
 RESULTS_FILE = Path(__file__).resolve().with_name("flight_results.csv")
 
@@ -134,11 +136,31 @@ def flight_state_name(drone_obj):
     return name.replace("_", "").replace(" ", "").lower()
 
 
+def _begin_telemetry_logger(logger):
+    """Start a TelemetryLogger once when the drone becomes airborne."""
+    if logger is not None:
+        return logger
+    logger = TelemetryLogger()
+    print(f"Telemetry logging to {logger.path}")
+    return logger
+
+
+def _close_telemetry_logger(logger):
+    """Flush and close the CSV logger; return the path or None."""
+    if logger is None:
+        return None
+    path = logger.close()
+    print(f"Telemetry CSV closed: {path} ({logger.sample_count} samples)")
+    return path
+
+
 def start_flight(drone_obj, pilot_name):
     """
     This function contains the entire flight loop.
     It blocks the main program until the flight is over (land, practice, or crash).
-    Returns the flight_stats object if it was a competition landing, else None.
+    Returns (flight_stats, telemetry_csv_path).
+    flight_stats is set only for a competition landing; otherwise None.
+    telemetry_csv_path is the data_pipeline CSV when any samples were logged.
     """
     print(f"\n--- Starting Flight for {pilot_name} ---")
     print("CONTROLS: L1(Takeoff) | R1(Comp. Land) | R2(Prac. Land) | L2(Emergency)")
@@ -150,122 +172,141 @@ def start_flight(drone_obj, pilot_name):
     ground_since = None
     controller_flight = False
     landing_already_complete = False
+    logger = None
 
-    while True:
-        reported_state = flight_state_name(drone_obj)
-        airborne = reported_state in {"takeoff", "takingoff", "flight", "flying", "landing"}
-        grounded = reported_state in {"ready", "stop", "stopped", "landed"}
+    try:
+        while True:
+            reported_state = flight_state_name(drone_obj)
+            airborne = reported_state in {"takeoff", "takingoff", "flight", "flying", "landing"}
+            grounded = reported_state in {"ready", "stop", "stopped", "landed"}
 
-        # Emergency and practice buttons retain their original meaning.
-        if drone_obj.l2_pressed():
-            current_state = STATE_EMERGENCY
-        elif current_state == STATE_FLYING and drone_obj.r2_pressed():
-            current_state = STATE_PRACTICE_LAND
-        elif current_state == STATE_FLYING and drone_obj.r1_pressed():
-            current_state = STATE_LANDED
-        elif current_state == STATE_IDLE:
-            if airborne:
-                print("\n--- CONTROLLER TAKEOFF DETECTED ---")
-                current_state = STATE_FLYING
-                controller_flight = True
-                start_time = time.monotonic()
-            elif drone_obj.l1_pressed():
-                print("\n--- TAKEOFF ---")
-                drone_obj.takeoff()
-                current_state = STATE_FLYING
-                start_time = time.monotonic()
-
-        if current_state == STATE_FLYING:
-            if airborne:
-                airborne_seen = True
-                ground_since = None
-            elif grounded and airborne_seen:
-                if ground_since is None:
-                    ground_since = time.monotonic()
-                elif time.monotonic() - ground_since >= 0.5:
-                    print("\n--- LANDING DETECTED ---")
-                    landing_already_complete = True
-                    current_state = STATE_LANDED
-            else:
-                # Unknown states are not evidence of a completed landing.
-                ground_since = None
-            if reported_state in {"error", "accident"}:
+            # Emergency and practice buttons retain their original meaning.
+            if drone_obj.l2_pressed():
                 current_state = STATE_EMERGENCY
+            elif current_state == STATE_FLYING and drone_obj.r2_pressed():
+                current_state = STATE_PRACTICE_LAND
+            elif current_state == STATE_FLYING and drone_obj.r1_pressed():
+                current_state = STATE_LANDED
+            elif current_state == STATE_IDLE:
+                if airborne:
+                    print("\n--- CONTROLLER TAKEOFF DETECTED ---")
+                    current_state = STATE_FLYING
+                    controller_flight = True
+                    start_time = time.monotonic()
+                    logger = _begin_telemetry_logger(logger)
+                elif drone_obj.l1_pressed():
+                    print("\n--- TAKEOFF ---")
+                    drone_obj.takeoff()
+                    current_state = STATE_FLYING
+                    start_time = time.monotonic()
+                    logger = _begin_telemetry_logger(logger)
 
-        # --- Handle Flying State ---
-        if current_state == STATE_FLYING:
-            # Let the controller continue controlling a controller-started flight.
-            if not controller_flight and reported_state != "landing":
-                # 2. Get joystick values for flight control
-                pitch = max(-60, min(60, drone_obj.get_left_joystick_y()))
-                roll = max(-60, min(60, drone_obj.get_left_joystick_x()))
-                throttle = max(-60, min(60, drone_obj.get_right_joystick_y()))
-                yaw_input = max(-60, min(60, drone_obj.get_right_joystick_x()))
+            if current_state == STATE_FLYING:
+                if airborne:
+                    airborne_seen = True
+                    ground_since = None
+                elif grounded and airborne_seen:
+                    if ground_since is None:
+                        ground_since = time.monotonic()
+                    elif time.monotonic() - ground_since >= 0.5:
+                        print("\n--- LANDING DETECTED ---")
+                        landing_already_complete = True
+                        current_state = STATE_LANDED
+                else:
+                    # Unknown states are not evidence of a completed landing.
+                    ground_since = None
+                if reported_state in {"error", "accident"}:
+                    current_state = STATE_EMERGENCY
 
-                # 3. Set drone movement
-                drone_obj.set_pitch(pitch)
-                drone_obj.set_roll(roll)
-                drone_obj.set_throttle(throttle)
-                drone_obj.set_yaw(yaw_input)
-                drone_obj.move()
+            # --- Handle Flying State ---
+            if current_state == STATE_FLYING:
+                # Let the controller continue controlling a controller-started flight.
+                if not controller_flight and reported_state != "landing":
+                    # 2. Get joystick values for flight control
+                    pitch = max(-60, min(60, drone_obj.get_left_joystick_y()))
+                    roll = max(-60, min(60, drone_obj.get_left_joystick_x()))
+                    throttle = max(-60, min(60, drone_obj.get_right_joystick_y()))
+                    yaw_input = max(-60, min(60, drone_obj.get_right_joystick_x()))
 
-            # 4. --- Data Collection ---
-            relative_time = time.monotonic() - start_time
+                    # 3. Set drone movement
+                    drone_obj.set_pitch(pitch)
+                    drone_obj.set_roll(roll)
+                    drone_obj.set_throttle(throttle)
+                    drone_obj.set_yaw(yaw_input)
+                    drone_obj.move()
 
-            data_point = {
-                "time": relative_time,
-                "alt": drone_obj.get_height("cm"),
-                "vx": drone_obj.get_flow_velocity_x(),
-                "vy": drone_obj.get_flow_velocity_y(),
-                "ax": drone_obj.get_accel_x(),
-                "ay": drone_obj.get_accel_y(),
-                "az": drone_obj.get_accel_z(),
-                "yaw": drone_obj.get_angle_z()
-            }
-            flight_data_list.append(data_point)
+                # 4. --- Data Collection (leaderboard stats + full telemetry CSV) ---
+                relative_time = time.monotonic() - start_time
 
-            # 5. Output live data
-            print(f"FLYING | Pilot: {pilot_name} | Time: {relative_time:5.1f}s | "
-                  f"Points: {len(flight_data_list)}", end='\r')
+                data_point = {
+                    "time": relative_time,
+                    "alt": drone_obj.get_height("cm"),
+                    "vx": drone_obj.get_flow_velocity_x(),
+                    "vy": drone_obj.get_flow_velocity_y(),
+                    "ax": drone_obj.get_accel_x(),
+                    "ay": drone_obj.get_accel_y(),
+                    "az": drone_obj.get_accel_z(),
+                    "yaw": drone_obj.get_angle_z()
+                }
+                flight_data_list.append(data_point)
 
-        elif current_state == STATE_IDLE:
-            print(f"IDLE: {pilot_name}, take off with the controller or press L1...", end='\r')
+                if logger is not None:
+                    logger.log_sample(sample_from_drone(drone_obj))
 
-        # --- Handle Flight End States ---
-        if current_state == STATE_LANDED:
-            print("\n--- COMPETITION LANDING ---")
-            if not landing_already_complete:
+                # 5. Output live data
+                telem_count = logger.sample_count if logger is not None else 0
+                print(f"FLYING | Pilot: {pilot_name} | Time: {relative_time:5.1f}s | "
+                      f"Points: {len(flight_data_list)} | CSV: {telem_count}", end='\r')
+
+            elif current_state == STATE_IDLE:
+                print(f"IDLE: {pilot_name}, take off with the controller or press L1...", end='\r')
+
+            # --- Handle Flight End States ---
+            if current_state == STATE_LANDED:
+                print("\n--- COMPETITION LANDING ---")
+                if not landing_already_complete:
+                    drone_obj.land()
+                end_time = time.monotonic()
+                flight_time = end_time - start_time
+                print(f"Flight complete. Total time: {flight_time:.2f}s")
+
+                csv_path = _close_telemetry_logger(logger)
+                logger = None
+
+                stats = calculate_flight_stats(flight_data_list, flight_time, pilot_name)
+                if not flight_data_list:
+                    print("No telemetry collected; saving landing and flight time only.")
+                print("--- FLIGHT STATS (to be saved) ---")
+                print(f"  Pilot:        {stats['pilot_name']}")
+                print(f"  Flight Time:  {stats['flight_time']:.2f}s")
+                print(f"  Max Speed:    {stats['max_speed']:.2f} units")
+                print(f"  Max Accel:    {stats['max_accel']:.2f} units")
+                print(f"  Yaw Variance: {stats['yaw_variance']:.2f} deg^2")
+                print("----------------------------------\n")
+                return stats, csv_path
+
+            elif current_state == STATE_PRACTICE_LAND:
+                print("\n--- PRACTICE LANDING ---")
                 drone_obj.land()
-            end_time = time.monotonic()
-            flight_time = end_time - start_time
-            print(f"Flight complete. Total time: {flight_time:.2f}s")
+                csv_path = _close_telemetry_logger(logger)
+                logger = None
+                print("Practice flight complete. Leaderboard stats will not be saved.")
+                return None, csv_path
 
-            stats = calculate_flight_stats(flight_data_list, flight_time, pilot_name)
-            if not flight_data_list:
-                print("No telemetry collected; saving landing and flight time only.")
-            print("--- FLIGHT STATS (to be saved) ---")
-            print(f"  Pilot:        {stats['pilot_name']}")
-            print(f"  Flight Time:  {stats['flight_time']:.2f}s")
-            print(f"  Max Speed:    {stats['max_speed']:.2f} units")
-            print(f"  Max Accel:    {stats['max_accel']:.2f} units")
-            print(f"  Yaw Variance: {stats['yaw_variance']:.2f} deg^2")
-            print("----------------------------------\n")
-            return stats
+            elif current_state == STATE_EMERGENCY:
+                print("\n--- EMERGENCY STOP / CRASH DETECTED ---")
+                drone_obj.emergency_stop()
+                csv_path = _close_telemetry_logger(logger)
+                logger = None
+                print("Flight aborted. Leaderboard stats will not be saved.")
+                return None, csv_path
 
-        elif current_state == STATE_PRACTICE_LAND:
-            print("\n--- PRACTICE LANDING ---")
-            drone_obj.land()
-            print("Practice flight complete. Data will not be saved.")
-            return None  # Return nothing
-
-        elif current_state == STATE_EMERGENCY:
-            print("\n--- EMERGENCY STOP / CRASH DETECTED ---")
-            drone_obj.emergency_stop()
-            print("Flight aborted. Data will not be saved.")
-            return None  # Return nothing
-
-        # Loop delay for ~20Hz data capture
-        time.sleep(0.05)
+            # Loop delay for ~20Hz data capture
+            time.sleep(0.05)
+    finally:
+        # Crash / Ctrl+C: still flush whatever telemetry was written.
+        if logger is not None:
+            _close_telemetry_logger(logger)
 
 
 # --- Main Program ---
@@ -292,12 +333,16 @@ def main():
                     continue
 
                 # This function will block until the flight is over
-                flight_stats = start_flight(drone, pilot_name)
+                flight_stats, telemetry_csv = start_flight(drone, pilot_name)
 
                 if flight_stats:
                     flight_history.append(flight_stats)
                     flight_history.save_to_file()
                     print(f"Flight for {pilot_name} saved to leaderboard.")
+
+                if telemetry_csv:
+                    print(f"Telemetry CSV saved locally: {telemetry_csv}")
+                    print("Upload it to S3 manually from the AWS console when ready.")
 
                 # Show the updated leaderboard after every flight
                 flight_history.print_leaderboard()
