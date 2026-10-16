@@ -13,6 +13,7 @@ import csv  # For saving flight results
 from pathlib import Path
 
 from data_pipeline import TelemetryLogger, sample_from_drone, unique_csv_path
+from s3_upload import upload_testdata_to_s3
 
 # --- Flight States ---
 STATE_IDLE = 0
@@ -359,6 +360,11 @@ def main():
                     telemetry_path = logger.save()
                     if telemetry_path:
                         print(f"Saved {logger.sample_count} telemetry samples to {telemetry_path}")
+                try:
+                    uploaded_count = upload_testdata_to_s3()
+                    print(f"Uploaded {uploaded_count} CSV file(s) from testData to S3.")
+                except Exception as upload_error:
+                    print(f"S3 upload failed; local CSV files are still saved: {upload_error}")
                 break  # Exit the menu loop
 
             else:
