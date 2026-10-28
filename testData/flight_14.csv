@@ -1,0 +1,5 @@
+timestamp_utc,timestamp_unix_ms,sample_index,interval_ms,gap_detected,missing_fields,accel_x,accel_y,accel_z,angle_roll,angle_pitch,angle_yaw,angular_speed_x,angular_speed_y,angular_speed_z,pressure_pa,elevation_m,height_cm,bottom_range_cm,front_range_cm,pos_x_cm,pos_y_cm,pos_z_cm,flow_velocity_x,flow_velocity_y,speed_cm_s,color_front,color_back,battery_pct,temperature_c
+2026-10-28T21:10:14.861+00:00,1793221814861,0,,0,,3,0,88,18,3,0,-60,-2,-1,99320.87,277.55,999.9,999.9,999.9,-12.723,16.008,84.357,-8000.0,44500.0,45213.383,black,black,92,39.19
+2026-10-28T21:10:15.427+00:00,1793221815427,1,566,1,,4,2,113,13,0,13,-38,27,71,99314.63,278.08,59.2,44.2,64.6,-6.428,27.754,50.72,200.0,55900.0,55900.3578,black,black,91,38.49
+2026-10-28T21:10:16.011+00:00,1793221816011,2,584,1,,0,-2,90,3,-3,20,295,-453,-312,99312.75,278.39,999.9,999.9,999.9,-24.128,6.419,56.643,-32500.0,-13200.0,35078.3409,black,black,88,38.45
+2026-10-28T21:10:16.584+00:00,1793221816584,3,573,1,,-6,-16,54,-59,7,-171,-3,-429,-1140,99314.65,278.07,999.9,999.9,999.9,-24.652,5.106,-5.288,-32500.0,-68400.0,75728.5283,black,black,90,38.45
