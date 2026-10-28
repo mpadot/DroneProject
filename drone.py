@@ -13,7 +13,7 @@ import csv  # For saving flight results
 from pathlib import Path
 
 from data_pipeline import TelemetryLogger, sample_from_drone, unique_csv_path
-from s3_upload import upload_testdata_to_s3
+from s3_upload import upload_csv_files_to_s3
 
 # --- Flight States ---
 STATE_IDLE = 0
@@ -56,7 +56,7 @@ class FlightHistory:
         last.next = new_node
 
     def save_to_file(self, filename=None):
-        """Iterates the linked list and saves one row per flight to a CSV file."""
+        """Save one row per flight to CSV and return the created path."""
         all_flights = []
         current = self.head
         while current:
@@ -78,8 +78,10 @@ class FlightHistory:
                 writer.writeheader()
                 writer.writerows(all_flights)
             print(f"Successfully saved {len(all_flights)} flight(s) to {path}")
+            return path
         except Exception as e:
             print(f"Error saving file: {e}")
+            return None
 
     def print_leaderboard(self):
         """Prints a sorted leaderboard to the console."""
@@ -318,6 +320,7 @@ def main():
     drone = Drone()
     flight_history = FlightHistory()  # This is our linked list
     pending_telemetry = []
+    csv_files_to_upload = []
 
     try:
         print("Pairing drone...")
@@ -353,16 +356,19 @@ def main():
             elif choice == '2':
                 print("Ending competition...")
                 if flight_history.count:
-                    flight_history.save_to_file()
+                    results_path = flight_history.save_to_file()
+                    if results_path:
+                        csv_files_to_upload.append(results_path)
                 else:
                     print("No completed competition flights to save.")
                 for logger in pending_telemetry:
                     telemetry_path = logger.save()
                     if telemetry_path:
                         print(f"Saved {logger.sample_count} telemetry samples to {telemetry_path}")
+                        csv_files_to_upload.append(telemetry_path)
                 try:
-                    uploaded_count = upload_testdata_to_s3()
-                    print(f"Uploaded {uploaded_count} CSV file(s) from testData to S3.")
+                    uploaded_count = upload_csv_files_to_s3(csv_files_to_upload)
+                    print(f"Uploaded {uploaded_count} CSV file(s) from this competition to S3.")
                 except Exception as upload_error:
                     print(f"S3 upload failed; local CSV files are still saved: {upload_error}")
                 break  # Exit the menu loop
