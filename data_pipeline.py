@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import math
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,7 +102,20 @@ SENSOR_COLUMNS = [
 # If two samples are farther apart than this, mark gap_detected=1.
 DEFAULT_GAP_THRESHOLD_MS = 500
 
-DATA_DIR = Path(__file__).resolve().parent / "data" / "flights"
+TESTDATA_DIR = Path(__file__).resolve().parent / "testData"
+
+
+def unique_csv_path(stem: str, directory: Path | None = None) -> Path:
+    """Return directory/stem_N.csv using the next unused integer suffix."""
+    directory = Path(directory) if directory is not None else TESTDATA_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(rf"^{re.escape(stem)}_(\d+)\.csv$", re.IGNORECASE)
+    highest = 0
+    for path in directory.glob(f"{stem}_*.csv"):
+        match = pattern.match(path.name)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return directory / f"{stem}_{highest + 1}.csv"
 
 
 def _now_ms() -> int:
@@ -218,26 +232,36 @@ class TelemetryLogger:
         self,
         output_path: str | os.PathLike[str] | None = None,
         gap_threshold_ms: int = DEFAULT_GAP_THRESHOLD_MS,
+        deferred_write: bool = False,
     ) -> None:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if output_path is None:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            output_path = DATA_DIR / f"flight_{stamp}.csv"
-        self.path = Path(output_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.deferred_write = deferred_write
+        if deferred_write:
+            self.path = None
+        elif output_path is None:
+            self.path = unique_csv_path("flight")
+        else:
+            requested = Path(output_path)
+            directory = requested.parent if requested.parent != Path("") else TESTDATA_DIR
+            self.path = unique_csv_path(requested.stem, directory)
         self.gap_threshold_ms = gap_threshold_ms
         self._sample_index = 0
         self._last_unix_ms: int | None = None
         self._closed = False
         self._write_failures = 0
+        self._rows: list[dict[str, Any]] = []
 
+        self._fh = None
+        self._writer = None
+        if not deferred_write:
+            self._open_output()
+
+    def _open_output(self) -> None:
+        if self.path is None:
+            self.path = unique_csv_path("flight")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         new_file = not self.path.exists() or self.path.stat().st_size == 0
         self._fh = self.path.open("a", newline="", encoding="utf-8")
-        self._writer = csv.DictWriter(
-            self._fh,
-            fieldnames=SCHEMA,
-            extrasaction="ignore",
-        )
+        self._writer = csv.DictWriter(self._fh, fieldnames=SCHEMA, extrasaction="ignore")
         if new_file:
             self._writer.writeheader()
             self._fh.flush()
@@ -277,11 +301,16 @@ class TelemetryLogger:
 
         row["missing_fields"] = "|".join(missing)
         self._sample_index += 1
-        self._write_row(row)
+        if self.deferred_write:
+            self._rows.append(row)
+        else:
+            self._write_row(row)
         return row
 
     def _write_row(self, row: Mapping[str, Any]) -> None:
         try:
+            if self._writer is None:
+                return
             self._writer.writerow(row)
             self._fh.flush()
             os.fsync(self._fh.fileno())
@@ -300,7 +329,23 @@ class TelemetryLogger:
     def write_failures(self) -> int:
         return self._write_failures
 
-    def close(self) -> Path:
+    def save(self) -> Path | None:
+        """Write buffered rows to a new CSV and return its path."""
+        if not self.deferred_write:
+            return self.path
+        if not self._rows:
+            return None
+        self._open_output()
+        for row in self._rows:
+            self._write_row(row)
+        self._fh.close()
+        self._fh = None
+        return self.path
+
+    def close(self) -> Path | None:
+        if self.deferred_write:
+            self._closed = True
+            return None
         if not self._closed:
             try:
                 self._fh.flush()

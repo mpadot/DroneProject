@@ -12,9 +12,8 @@ import statistics  # Used for calculating variance
 import csv  # For saving flight results
 from pathlib import Path
 
-from data_pipeline import TelemetryLogger, sample_from_drone
-
-RESULTS_FILE = Path(__file__).resolve().with_name("flight_results.csv")
+from data_pipeline import TelemetryLogger, sample_from_drone, unique_csv_path
+from s3_upload import upload_csv_files_to_s3
 
 # --- Flight States ---
 STATE_IDLE = 0
@@ -56,8 +55,8 @@ class FlightHistory:
             last = last.next
         last.next = new_node
 
-    def save_to_file(self, filename=RESULTS_FILE):
-        """Iterates the linked list and saves one row per flight to a CSV file."""
+    def save_to_file(self, filename=None):
+        """Save one row per flight to CSV and return the created path."""
         all_flights = []
         current = self.head
         while current:
@@ -65,17 +64,24 @@ class FlightHistory:
             current = current.next
 
         try:
+            if filename is None:
+                path = unique_csv_path("flight_results")
+            else:
+                requested = Path(filename)
+                path = unique_csv_path(requested.stem, requested.parent)
             fields = [
                 "pilot_name", "landing_type", "sample_count", "flight_time",
                 "max_speed", "min_speed", "max_accel", "yaw_variance"
             ]
-            with open(filename, 'w', newline='', encoding='utf-8') as f:
+            with open(path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fields)
                 writer.writeheader()
                 writer.writerows(all_flights)
-            print(f"Successfully saved {len(all_flights)} flight(s) to {filename}")
+            print(f"Successfully saved {len(all_flights)} flight(s) to {path}")
+            return path
         except Exception as e:
             print(f"Error saving file: {e}")
+            return None
 
     def print_leaderboard(self):
         """Prints a sorted leaderboard to the console."""
@@ -140,27 +146,27 @@ def _begin_telemetry_logger(logger):
     """Start a TelemetryLogger once when the drone becomes airborne."""
     if logger is not None:
         return logger
-    logger = TelemetryLogger()
-    print(f"Telemetry logging to {logger.path}")
+    logger = TelemetryLogger(deferred_write=True)
+    print("Telemetry logging in memory; it will be saved when the competition ends.")
     return logger
 
 
 def _close_telemetry_logger(logger):
-    """Flush and close the CSV logger; return the path or None."""
+    """Close the in-memory logger and return it for saving at competition end."""
     if logger is None:
         return None
-    path = logger.close()
-    print(f"Telemetry CSV closed: {path} ({logger.sample_count} samples)")
-    return path
+    logger.close()
+    print(f"Telemetry buffered ({logger.sample_count} samples).")
+    return logger
 
 
 def start_flight(drone_obj, pilot_name):
     """
     This function contains the entire flight loop.
     It blocks the main program until the flight is over (land, practice, or crash).
-    Returns (flight_stats, telemetry_csv_path).
+    Returns (flight_stats, deferred_telemetry_logger).
     flight_stats is set only for a competition landing; otherwise None.
-    telemetry_csv_path is the data_pipeline CSV when any samples were logged.
+    Telemetry is held in memory until the competition is ended from the menu.
     """
     print(f"\n--- Starting Flight for {pilot_name} ---")
     print("CONTROLS: L1(Takeoff) | R1(Comp. Land) | R2(Prac. Land) | L2(Emergency)")
@@ -313,6 +319,8 @@ def start_flight(drone_obj, pilot_name):
 def main():
     drone = Drone()
     flight_history = FlightHistory()  # This is our linked list
+    pending_telemetry = []
+    csv_files_to_upload = []
 
     try:
         print("Pairing drone...")
@@ -333,22 +341,36 @@ def main():
                     continue
 
                 # This function will block until the flight is over
-                flight_stats, telemetry_csv = start_flight(drone, pilot_name)
+                flight_stats, telemetry_logger = start_flight(drone, pilot_name)
 
                 if flight_stats:
                     flight_history.append(flight_stats)
-                    flight_history.save_to_file()
-                    print(f"Flight for {pilot_name} saved to leaderboard.")
+                    print(f"Flight for {pilot_name} added to the competition results.")
 
-                if telemetry_csv:
-                    print(f"Telemetry CSV saved locally: {telemetry_csv}")
+                if telemetry_logger and telemetry_logger.sample_count:
+                    pending_telemetry.append(telemetry_logger)
 
                 # Show the updated leaderboard after every flight
                 flight_history.print_leaderboard()
 
             elif choice == '2':
                 print("Ending competition...")
-                flight_history.save_to_file()
+                if flight_history.count:
+                    results_path = flight_history.save_to_file()
+                    if results_path:
+                        csv_files_to_upload.append(results_path)
+                else:
+                    print("No completed competition flights to save.")
+                for logger in pending_telemetry:
+                    telemetry_path = logger.save()
+                    if telemetry_path:
+                        print(f"Saved {logger.sample_count} telemetry samples to {telemetry_path}")
+                        csv_files_to_upload.append(telemetry_path)
+                try:
+                    uploaded_count = upload_csv_files_to_s3(csv_files_to_upload)
+                    print(f"Uploaded {uploaded_count} CSV file(s) from this competition to S3.")
+                except Exception as upload_error:
+                    print(f"S3 upload failed; local CSV files are still saved: {upload_error}")
                 break  # Exit the menu loop
 
             else:
@@ -366,7 +388,7 @@ def main():
 
     print("\nProgram finished.")
     # You can access the final data here if needed,
-    # but it's already saved to 'flight_results.csv'.
+    # but it's already saved under testData/.
 
 
 if __name__ == "__main__":
